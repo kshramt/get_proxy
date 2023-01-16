@@ -14,7 +14,7 @@ copy poetry.toml pyproject.toml poetry.lock .
 
 from base_api as prod_api
 run python3.11 -m poetry install --only main
-run python3.11 -m poetry run python3 -m playwright install --with-deps \
+run python3.11 -m poetry run python3 -m playwright install --with-deps chromium \
    && rm -rf /var/lib/apt/lists/*
 copy src src
 run python3.11 -m poetry install --only main
