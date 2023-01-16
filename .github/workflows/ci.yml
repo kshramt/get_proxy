@@ -1,0 +1,95 @@
+name: ci
+on: [push]
+permissions:
+  contents: read
+  packages: write
+jobs:
+  set-vars:
+    runs-on: ubuntu-latest
+    outputs:
+      ref-b64: ${{ steps.vars.outputs.ref-b64 }}
+      tmp-dir: ${{ steps.vars.outputs.tmp-dir }}
+      host-arch: ${{ steps.vars.outputs.host-arch }}
+      host-os: ${{ steps.vars.outputs.host-os }}
+    steps:
+    - id: vars
+      run: |
+        set -xv
+        set -o errexit
+        set -o pipefail
+        {
+        echo "ref-b64=$(echo "${{ github.ref }}" | base64 --wrap 0 | sed -e 's/=//g')"
+        echo "tmp-dir=$(mktemp -d)"
+        echo "host-arch=$(docker version --format '{{ (index .Server.Components 0).Details.Arch }}')"
+        echo "host-os=$(docker version --format '{{ (index .Server.Components 0).Details.Os }}')"
+        } >> "$GITHUB_OUTPUT"
+  build-images:
+    needs: [set-vars]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [linux]
+        arch: [amd64, arm64]
+    steps:
+    - uses: actions/checkout@v3
+    - uses: docker/setup-qemu-action@v2
+    - uses: docker/setup-buildx-action@v2
+    - uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - run: python3 bake.py --sha=${{ github.sha }} --ref_b64=${{ needs.set-vars.outputs.ref-b64 }} | tee bake.json
+    - run: docker buildx bake --file bake.json ${{ matrix.os }}-${{ matrix.arch }}
+    #
+    - if: ${{ matrix.os == needs.set-vars.outputs.host-os && matrix.arch == needs.set-vars.outputs.host-arch }}
+      run: docker run ghcr.io/kshramt/get_proxy/test_api:${{ github.sha }}-${{ matrix.os }}-${{ matrix.arch }} scripts/check.sh
+    #
+    - if: ${{ matrix.os == needs.set-vars.outputs.host-os && matrix.arch == needs.set-vars.outputs.host-arch }}
+      run: docker run -d -p8080:8080 ghcr.io/kshramt/get_proxy:${{ github.sha }}-${{ matrix.os }}-${{ matrix.arch }}
+    - if: ${{ matrix.os == needs.set-vars.outputs.host-os && matrix.arch == needs.set-vars.outputs.host-arch }}
+      run: |
+        set -xv
+        set -o nounset
+        set -o errexit
+        set -o pipefail
+        set -o noclobber
+        i=0
+        for _i in {1..10}; do
+          if curl localhost:8080/admin/health; then
+            break;
+          fi
+          (( ++i ))
+          sleep 1
+        done
+        if [[ $i -ge 10 ]]; then
+            exit 1
+        fi
+        curl localhost:8080/?uri=https://github.com -o output.gz
+    #
+    - run: docker push ghcr.io/kshramt/get_proxy:${{ github.sha }}-${{ matrix.os }}-${{ matrix.arch }}
+    - if: ${{ github.ref == 'refs/heads/main' }}
+      run: |
+        set -o errexit
+        docker tag ghcr.io/kshramt/get_proxy:${{ github.sha }}-${{ matrix.os }}-${{ matrix.arch }} ghcr.io/kshramt/get_proxy:b${{ github.run_number }}-${{ matrix.os }}-${{ matrix.arch }}
+        docker push ghcr.io/kshramt/get_proxy:b${{ github.run_number }}-${{ matrix.os }}-${{ matrix.arch }}
+        docker tag ghcr.io/kshramt/get_proxy:${{ github.sha }}-${{ matrix.os }}-${{ matrix.arch }} ghcr.io/kshramt/get_proxy:latest-${{ matrix.os }}-${{ matrix.arch }}
+        docker push ghcr.io/kshramt/get_proxy:latest-${{ matrix.os }}-${{ matrix.arch }}
+  build-manifests:
+    needs: [build-images]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - run: docker manifest create ghcr.io/kshramt/get_proxy:${{ github.sha }}{,-linux-{amd64,arm64}}
+    - run: docker manifest push ghcr.io/kshramt/get_proxy:${{ github.sha }}
+    - if: ${{ github.ref == 'refs/heads/main' }}
+      run: |
+        set -o errexit
+        docker manifest create ghcr.io/kshramt/get_proxy:{b${{ github.run_number }},${{ github.sha }}-linux-{amd64,arm64}}
+        docker manifest push ghcr.io/kshramt/get_proxy:b${{ github.run_number }}
+        docker manifest create ghcr.io/kshramt/get_proxy:{latest,${{ github.sha }}-linux-{amd64,arm64}}
+        docker manifest push ghcr.io/kshramt/get_proxy:latest
