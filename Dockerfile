@@ -1,32 +1,31 @@
-from ubuntu:22.04 as base_py
-env PYTHONUNBUFFERED 1
-env PYTHONDONTWRITEBYTECODE 1
-arg arch
+FROM node:20.3.0-bullseye as base_js
+ENV PLAYWRIGHT_BROWSERS_PATH /ms-playwright
+RUN mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"
+WORKDIR /app
+COPY package.json package-lock.json ./
 
-from base_py as base_api
-workdir /app
-env PLAYWRIGHT_BROWSERS_PATH /my/playwright
-run apt-get update \
-   && apt-get install -y python3.11 python3-pip \
-   && rm -rf /var/lib/apt/lists/* \
-   && python3.11 -m pip install --no-cache-dir poetry==1.3.1
-copy poetry.toml pyproject.toml poetry.lock .
+FROM base_js as builder_js
+RUN --mount=type=cache,target=/root/.npm --mount=type=cache,target=/root/.cache npm ci
+COPY tsconfig.json tsconfig.json
+COPY src src
+RUN npm run build
 
-from base_api as prod_api
-run python3.11 -m poetry install --only main
-run python3.11 -m poetry run python3 -m playwright install --with-deps chromium \
+FROM base_js as prod_api
+RUN --mount=type=cache,target=/root/.npm --mount=type=cache,target=/root/.cache npm ci --omit=dev
+RUN --mount=type=cache,target=/ms-playwright npx playwright install --with-deps chromium \
    && rm -rf /var/lib/apt/lists/*
-copy src src
-run python3.11 -m poetry install --only main
+COPY --from=builder_js /app/dist dist
 
-from prod_api as test_api
-run python3.11 -m poetry install
-copy src src
-run python3.11 -m poetry install
-copy scripts/check.sh scripts/check.sh
+FROM prod_api as test_api
+RUN --mount=type=cache,target=/root/.npm --mount=type=cache,target=/root/.cache npm ci
+COPY tsconfig.json tsconfig.json
+COPY src src
+COPY scripts/check.sh scripts/check.sh
 
-from prod_api as prod
-expose 8080
+FROM prod_api as prod
+RUN rm -rf package.json package-lock.json
+RUN adduser --disabled-password --gecos '' app
+USER app
 
-copy scripts/run.sh scripts/run.sh
-entrypoint ["scripts/run.sh"]
+EXPOSE 8080
+ENTRYPOINT ["node", "dist/index.js"]
