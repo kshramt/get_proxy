@@ -30,7 +30,9 @@ app.listen(port, () => {
 });
 
 const getContent = async (uri: string) => {
-  const ctx = await (await browser).newContext();
+  const ctx = await (
+    await browser
+  ).newContext({ locale: process.env.BROWSER_LOCALE || "en-US" });
   try {
     const page = await ctx.newPage();
     await page.goto(uri);
