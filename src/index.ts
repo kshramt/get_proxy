@@ -5,16 +5,35 @@ import Peps from "puppeteer-extra-plugin-stealth";
 
 chromium.use(Peps());
 const browser = chromium.launch({ headless: true });
+const ctx = browser.then((browser) =>
+  browser.newContext({ locale: process.env.BROWSER_LOCALE || "en-US" }),
+);
 
 const app = Express.default();
 const port = process.env.PORT || 8080;
 
+const DEFAULT_SLEEP_MSEC = 2000;
+
+const sleep = (msec: number) => {
+  return new Promise((resolve) => setTimeout(resolve, msec));
+};
+
 app.get("/", async (req, res) => {
-  const { uri } = req.query;
+  const uri = req.query.uri;
   if (typeof uri !== "string") {
     res.sendStatus(400);
     return;
   }
+  let mean_sleep_msec = DEFAULT_SLEEP_MSEC;
+  const sleep_query = req.query.sleep;
+  if (typeof sleep_query === "string") {
+    mean_sleep_msec = parseInt(sleep_query, 10);
+    if (isNaN(mean_sleep_msec)) {
+      mean_sleep_msec = DEFAULT_SLEEP_MSEC;
+    }
+  }
+  const sleep_msec = Math.random() * mean_sleep_msec;
+  await sleep(sleep_msec);
   const result = await getContent(uri);
   const b = Zlib.gzipSync(JSON.stringify(result));
   res.setHeader("Content-Type", "application/octet-stream");
@@ -30,11 +49,8 @@ app.listen(port, () => {
 });
 
 const getContent = async (uri: string) => {
-  const ctx = await (
-    await browser
-  ).newContext({ locale: process.env.BROWSER_LOCALE || "en-US" });
+  const page = await (await ctx).newPage();
   try {
-    const page = await ctx.newPage();
     await page.goto(uri);
     const content = await page.content();
     return {
@@ -53,6 +69,6 @@ const getContent = async (uri: string) => {
       error: err.toString(),
     };
   } finally {
-    await ctx.close();
+    await page.close();
   }
 };
